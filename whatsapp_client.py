@@ -69,14 +69,9 @@ class WhatsAppClient:
         try:
             mensagens = self.page.locator("div.message-in")
 
-            # espera existir pelo menos 1 mensagem
-            if await mensagens.count() == 0:
-                await mensagens.first.wait_for(timeout=10000)
+            await mensagens.last.wait_for(timeout=10000)
 
-            # 🔥 usa last direto (mais seguro)
-            ultima = mensagens.last
-
-            texto = await ultima.inner_text(timeout=10000)
+            texto = await mensagens.last.inner_text()
 
             return texto.lower()
 
@@ -122,14 +117,29 @@ class WhatsAppClient:
 
         return None
 
-    # =========================
-    async def responder_fluxo(self, cpf, instalacao, mes_ano):
+    
+    async def responder_fluxo(self, cpf, instalacao):
         ultima = await self.get_ultima_mensagem()
         print("🧠 Analisando:", ultima)
 
         # =====================================================
+        # 🔥 PRIORIDADE ABSOLUTA (ANTES DE TUDO)
+        # =====================================================
+        if (
+            "deseja atendimento" in ultima
+            and (
+                "instalação" in ultima
+                or "instalacao" in ultima
+                or "unidade" in ultima
+            )
+        ):
+            print("🚨 PRIORIDADE: mesma instalação")
+            await self.enviar_mensagem("Não")
+            return "OK"
+        # =====================================================
         # 🔥 RESET CONTROLADO (ENTENDER)
         # =====================================================
+        
         if "não estou conseguindo te entender" not in ultima:
             self.reset_count = 0
 
@@ -144,7 +154,50 @@ class WhatsAppClient:
             await self.esperar_nova_resposta()
             await self.enviar_mensagem("2 via fatura")
             return "OK"
+        elif (
+            "deseja atendimento" in ultima
+            and (
+                "mesma instalação" in ultima
+                or "mesma instalacao" in ultima
+                or "mesma unidade" in ultima
+                or "unidade consumidora" in ultima
+                or "já entrou em contato" in ultima
+                or "ja entrou em contato" in ultima
+                or "preciso confirmar seus dados" in ultima
+            )
+        ):
+            print("🏠 Respondendo mesma unidade/instalação")
+            await self.enviar_mensagem("Não")
+            return "OK"
 
+        # =====================================================
+        # 🔥 RESET POR IDENTIFICAÇÃO (NOVO)
+        # =====================================================
+        elif (
+            "não estou conseguindo te identificar" in ultima
+            or "nao estou conseguindo te identificar" in ultima
+        ):
+            print("🔄 Reset por erro de identificação")
+
+            await self.enviar_mensagem("Oi")
+            await self.esperar_nova_resposta()
+            await self.enviar_mensagem("2 via fatura")
+
+            return "OK"
+
+        elif (
+            "mais alguma conta" in ultima
+            or "quer tirar outra dúvida" in ultima
+            or "quer tirar outra duvida" in ultima
+            or "outra dúvida" in ultima
+            or "outra duvida" in ultima
+            or "te ajudo em algo mais" in ultima
+            or "posso te ajudar em algo mais" in ultima
+            or "algo mais" in ultima
+        ):
+            print("🔚 Finalizando atendimento")
+            await self.enviar_mensagem("Não")
+            return "OK"
         # =====================================================
         # 🔥 RESET POR IDENTIFICAÇÃO (NOVO)
         # =====================================================
@@ -169,6 +222,9 @@ class WhatsAppClient:
             or "quer tirar outra duvida" in ultima
             or "outra dúvida" in ultima
             or "outra duvida" in ultima
+            or "te ajudo em algo mais" in ultima
+            or "posso te ajudar em algo mais" in ultima
+            or "algo mais" in ultima
         ):
             print("🔚 Finalizando atendimento")
             await self.enviar_mensagem("Não")
@@ -178,7 +234,8 @@ class WhatsAppClient:
             await self.enviar_mensagem("10")
             return "FINALIZADO"
 
-        # =====================================================
+        
+                # =====================================================
         # 🔥 ENCERRAMENTO COMPLETO (NOVO)
         # =====================================================
         elif (
@@ -189,6 +246,13 @@ class WhatsAppClient:
         ):
             print("🔚 Conversa encerrada pela Cemig")
             return "FINALIZADO"
+        
+        elif (
+            "não há débitos em aberto" in ultima
+            or "nao ha debitos em aberto" in ultima
+        ):
+            print("❌ Sem débitos encontrados")
+            return "SEM_DEBITO"
 
         # =====================================================
         # 🔥 DECISÕES
@@ -221,7 +285,7 @@ class WhatsAppClient:
             or "precisa de segunda via" in ultima
         ):
             print("📄 Confirmando segunda via")
-            await self.enviar_mensagem("Sim")
+            await self.enviar_mensagem("Não")
             return "OK"
 
         # =====================================================
@@ -254,11 +318,6 @@ class WhatsAppClient:
         ):
             print("🏠 Enviando instalação")
             await self.enviar_mensagem(instalacao)
-            return "OK"
-
-        elif "mês e ano" in ultima:
-            print("📅 Enviando mês/ano")
-            await self.enviar_mensagem(mes_ano)
             return "OK"
 
         # =====================================================
@@ -331,7 +390,7 @@ class WhatsAppClient:
         return False
 
     # =========================
-    async def buscar_conta(self, cpf, instalacao, mes_ano):
+    async def buscar_conta(self, cpf, instalacao):
         await self.abrir_conversa_cemig()
         await self.limpar_conversa()
 
@@ -346,13 +405,22 @@ class WhatsAppClient:
 
         for _ in range(20):
 
+            # 🔥 prioridade máxima: PDF
             if await self.tem_pdf():
-                return await self.baixar_pdf()
+                pdfs = await self.baixar_todos_pdfs()
 
-            resultado = await self.responder_fluxo(cpf, instalacao, mes_ano)
+                if len(pdfs) == 1:
+                    return pdfs[0]
+
+                return pdfs
+
+            resultado = await self.responder_fluxo(cpf, instalacao)
 
             if resultado == "SEM_CONTA":
                 return "❌ Conta não encontrada"
+            
+            if resultado == "SEM_DEBITO":
+                return "❌ Não foram encontrados débitos para essa instalação."
 
             if resultado == "FINALIZADO":
                 return {"tipo": "confirmacao"}
@@ -360,8 +428,14 @@ class WhatsAppClient:
             if resultado != "IGNORAR":
                 await self.esperar_nova_resposta()
 
+            # 🔥 verifica de novo após resposta
             if await self.tem_pdf():
-                return await self.baixar_pdf()
+                pdfs = await self.baixar_todos_pdfs()
+
+                if len(pdfs) == 1:
+                    return pdfs[0]
+
+                return pdfs
 
         return "⚠️ Não consegui obter a fatura."
 
@@ -385,4 +459,24 @@ class WhatsAppClient:
             else:
                 break
             
-    
+    async def baixar_todos_pdfs(self):
+        mensagens = self.page.locator("div.message-in")
+        total = await mensagens.count()
+
+        arquivos = []
+
+        for i in range(self.mensagem_inicial_count, total):
+            msg = mensagens.nth(i)
+
+            if await msg.locator("span[data-icon='document']").count() > 0:
+                async with self.page.expect_download() as download_info:
+                    await msg.click()
+
+                download = await download_info.value
+                path = os.path.join(os.getcwd(), download.suggested_filename)
+                await download.save_as(path)
+
+                print("📥 PDF salvo:", path)
+                arquivos.append(path)
+
+        return arquivos

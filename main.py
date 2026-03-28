@@ -14,19 +14,15 @@ if not BOT_TOKEN:
 
 user_state = {}
 
-def validar_mes_ano(texto):
-    return re.match(r"^(0[1-9]|1[0-2])/\d{4}$", texto)
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Envie qualquer mensagem para começar")
 
-def validar_instalacao(texto):
-# remove espaços
-    texto = texto.strip()
 
-    # só números e mínimo 8 dígitos
+def validar_instalacao(texto):
+    texto = texto.strip()
     return texto.isdigit() and len(texto) >= 8
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text.strip()
@@ -36,7 +32,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
     if user_id not in user_state:
         user_state[user_id] = {"step": "cpf"}
-        await update.message.reply_text("Digite seu CPF:")
+        await update.message.reply_text("Digite seu CPF ou CNPJ:")
         return
 
     # =========================
@@ -52,7 +48,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
     # INSTALAÇÃO
     # =========================
-   
     if user_state[user_id]["step"] == "instalacao":
 
         if not validar_instalacao(text):
@@ -61,34 +56,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        user_state[user_id]["instalacao"] = text
-        user_state[user_id]["step"] = "mes_ano"
-
-        await update.message.reply_text("Digite o mês/ano da fatura (ex: 01/2024):")
-        return
-    # =========================
-    # MÊS/ANO
-    # =========================
-    if user_state[user_id]["step"] == "mes_ano":
-
-        if not validar_mes_ano(text):
-            await update.message.reply_text("Formato inválido. Use MM/AAAA (ex: 01/2024)")
-            return
-
         cpf = user_state[user_id]["cpf"]
-        instalacao = user_state[user_id]["instalacao"]
-        mes_ano = text
+        instalacao = text
 
         await update.message.reply_text("🔎 Buscando conta...")
 
         try:
             client = await WhatsAppClient.get_instance()
 
-            # 🔥 AGORA É ASYNC DE VERDADE
+            # 🔥 AGORA SEM MES/ANO
             resultado = await client.buscar_conta(
                 cpf,
-                instalacao,
-                mes_ano
+                instalacao
             )
 
             # =========================
@@ -101,6 +80,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # =========================
             # PDF
             # =========================
+            # 🔥 múltiplos PDFs
+            if isinstance(resultado, list):
+
+                for pdf in resultado:
+                    await update.message.reply_document(
+                        document=open(pdf, "rb"),
+                        filename="fatura_cemig.pdf"
+                    )
+
+                user_state[user_id]["step"] = "confirmar_continuacao"
+
+                await update.message.reply_text(
+                    f"📄 {len(resultado)} faturas encontradas!\n\nDeseja buscar outra conta?\n\nResponda: Sim ou Não"
+                )
+                return
+
+
+            # 🔥 PDF único (seu código atual)
             if isinstance(resultado, str) and resultado.endswith(".pdf"):
 
                 await update.message.reply_document(
@@ -114,7 +111,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "📄 Fatura encontrada!\n\nDeseja buscar outra conta?\n\nResponda: Sim ou Não"
                 )
                 return
-
             # =========================
             # DICT
             # =========================
@@ -152,14 +148,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         resposta = text.lower()
 
         if resposta == "sim":
-            user_state[user_id]["step"] = "mes_ano"
-
-            await update.message.reply_text("Digite o mês/ano da próxima fatura:")
+            user_state[user_id]["step"] = "cpf"
+            await update.message.reply_text("Digite o CPF ou CNPJ:")
             return
 
         elif resposta in ["não", "nao"]:
             await update.message.reply_text("✅ Atendimento finalizado!")
-
             del user_state[user_id]
             return
 
@@ -176,11 +170,8 @@ def run_bot():
 
     print("Bot rodando...")
 
-    # 🔥 SEM while, SEM loop duplicado
     app.run_polling()
 
 
 if __name__ == "__main__":
     run_bot()
-    
-    
