@@ -1,13 +1,14 @@
 from playwright.async_api import async_playwright
 import asyncio
 import os
-
+from datetime import datetime
 
 class WhatsAppClient:
 
     _instance = None
 
     def __init__(self):
+        self.ultima_msg_processada = None
         self.mensagem_inicial_count = 0
         self.reset_count = 0  # 🔥 controle de reset
 
@@ -21,6 +22,7 @@ class WhatsAppClient:
 
     # =========================
     async def init(self):
+        
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(headless=False)
 
@@ -56,6 +58,7 @@ class WhatsAppClient:
 
     # =========================
     async def enviar_mensagem(self, texto):
+        await asyncio.sleep(1)
         input_box = self.page.locator("div[contenteditable='true']").last
         await input_box.click()
         await input_box.fill(texto)
@@ -67,13 +70,21 @@ class WhatsAppClient:
     # =========================
     async def get_ultima_mensagem(self):
         try:
-            mensagens = self.page.locator("div.message-in")
+            await asyncio.sleep(1)
 
-            await mensagens.last.wait_for(timeout=10000)
+            mensagens = await self.page.locator("div.message-in").all()
 
-            texto = await mensagens.last.inner_text()
+            if not mensagens:
+                return ""
 
-            return texto.lower()
+            ultima = mensagens[-1]
+            texto = (await ultima.inner_text()).lower().strip()
+
+            # 🚨 evita repetir mensagem
+            if texto == self.ultima_msg_processada:
+                return ""
+
+            return texto
 
         except Exception as e:
             print("⚠️ erro ao ler mensagem:", e)
@@ -119,262 +130,169 @@ class WhatsAppClient:
 
     
     async def responder_fluxo(self, cpf, instalacao):
+        await asyncio.sleep(1.0)
         ultima = await self.get_ultima_mensagem()
-        print("🧠 Analisando:", ultima)
+        ultima = ultima.lower().strip()
 
-        # =====================================================
-        # 🔥 PRIORIDADE ABSOLUTA (ANTES DE TUDO)
-        # =====================================================
-        if (
-            "deseja atendimento" in ultima
-            and (
-                "instalação" in ultima
-                or "instalacao" in ultima
-                or "unidade" in ultima
-            )
-        ):
-            print("🚨 PRIORIDADE: mesma instalação")
-            await self.enviar_mensagem("Não")
-            return "OK"
-        # =====================================================
-        # 🔥 RESET CONTROLADO (ENTENDER)
-        # =====================================================
+        # 🚨 TRAVA DUPLICAÇÃO
+        if ultima == self.ultima_msg_processada:
+            await asyncio.sleep(1)
+            return "AGUARDAR"
+        self.ultima_msg_processada = ultima
+
+        print(f"🧠 → {ultima}")
+
+        # 🔥 LOG
+        from datetime import datetime
+        with open("log_conversa.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now()}]\n{ultima}\n{'-'*50}\n")
+            
+        if "já entrou em contato" in ultima or "ja entrou em contato" in ultima:
+            print("♻️ Detectado contexto antigo → aguardando pergunta")
+            return "AGUARDAR"
+
+        if "confirme seus dados" in ultima:
+            print("📋 Ignorando confirmação antiga")
+            return "AGUARDAR"
+
+        # 🚨 IGNORA LIXO
+        if len(ultima) < 5:
+            return "AGUARDAR"
+
+        if any(x in ultima for x in [
+            "disponível nas lojas",
+            "veja no vídeo",
+            "youtube.com",
+            "aplicativo da cemig",
+        ]):
+            return "AGUARDAR"
+
+        # 🚨 INFORMAÇÃO (não responder)
+        if "não há débitos" in ultima or "nao ha debitos" in ultima:
+            return "AGUARDAR"
+
+        # =========================
+        # 🔥 PRIORIDADE MÁXIMA
+        # =========================
         
-        if "não estou conseguindo te entender" not in ultima:
-            self.reset_count = 0
+        if "deseja atendimento" in ultima:
+            print("⚡ Novo atendimento - ignorando contexto antigo")
 
-        if "não estou conseguindo te entender" in ultima or "nao estou conseguindo te entender" in ultima:
-            self.reset_count += 1
-            print(f"🔄 Resetando... ({self.reset_count})")
-
-            if self.reset_count > 3:
-                return "SEM_CONTA"
-
-            await self.enviar_mensagem("Oi")
-            await self.esperar_nova_resposta()
-            await self.enviar_mensagem("2 via fatura")
-            return "OK"
-        elif (
-            "deseja atendimento" in ultima
-            and (
-                "mesma instalação" in ultima
-                or "mesma instalacao" in ultima
-                or "mesma unidade" in ultima
-                or "unidade consumidora" in ultima
-                or "já entrou em contato" in ultima
-                or "ja entrou em contato" in ultima
-                or "preciso confirmar seus dados" in ultima
-            )
-        ):
-            print("🏠 Respondendo mesma unidade/instalação")
             await self.enviar_mensagem("Não")
+           
             return "OK"
 
-        # =====================================================
-        # 🔥 RESET POR IDENTIFICAÇÃO (NOVO)
-        # =====================================================
-        elif (
-            "não estou conseguindo te identificar" in ultima
-            or "nao estou conseguindo te identificar" in ultima
-        ):
-            print("🔄 Reset por erro de identificação")
-
-            await self.enviar_mensagem("Oi")
-            await self.esperar_nova_resposta()
-            await self.enviar_mensagem("2 via fatura")
-
-            return "OK"
-
-        elif (
-            "mais alguma conta" in ultima
-            or "quer tirar outra dúvida" in ultima
-            or "quer tirar outra duvida" in ultima
-            or "outra dúvida" in ultima
-            or "outra duvida" in ultima
-            or "te ajudo em algo mais" in ultima
-            or "posso te ajudar em algo mais" in ultima
-            or "algo mais" in ultima
-        ):
-            print("🔚 Finalizando atendimento")
-            await self.enviar_mensagem("Não")
-            return "OK"
-        # =====================================================
-        # 🔥 RESET POR IDENTIFICAÇÃO (NOVO)
-        # =====================================================
-        elif (
-            "não estou conseguindo te identificar" in ultima
-            or "nao estou conseguindo te identificar" in ultima
-        ):
-            print("🔄 Reset por erro de identificação")
-
-            await self.enviar_mensagem("Oi")
-            await self.esperar_nova_resposta()
-            await self.enviar_mensagem("2 via fatura")
-
-            return "OK"
-
-        # =====================================================
-        # 🔥 FINALIZAÇÃO
-        # =====================================================
-        elif (
-            "mais alguma conta" in ultima
-            or "quer tirar outra dúvida" in ultima
-            or "quer tirar outra duvida" in ultima
-            or "outra dúvida" in ultima
-            or "outra duvida" in ultima
-            or "te ajudo em algo mais" in ultima
-            or "posso te ajudar em algo mais" in ultima
-            or "algo mais" in ultima
-        ):
-            print("🔚 Finalizando atendimento")
-            await self.enviar_mensagem("Não")
-            return "OK"
-
-        elif "como você avalia" in ultima:
-            await self.enviar_mensagem("10")
-            return "FINALIZADO"
-
-        
-                # =====================================================
-        # 🔥 ENCERRAMENTO COMPLETO (NOVO)
-        # =====================================================
-        elif (
-            "foi um prazer conversar com você" in ultima
-            or "foi um prazer conversar com voce" in ultima
-            or "até mais" in ultima
-            or "ate mais" in ultima
-        ):
-            print("🔚 Conversa encerrada pela Cemig")
-            return "FINALIZADO"
-        
-        elif (
-            "não há débitos em aberto" in ultima
-            or "nao ha debitos em aberto" in ultima
-        ):
-            print("❌ Sem débitos encontrados")
-            return "SEM_DEBITO"
-
-        # =====================================================
-        # 🔥 DECISÕES
-        # =====================================================
-        
-        elif (
-            "deseja atendimento" in ultima
-            and (
-                "mesma instalação" in ultima
-                or "mesma instalacao" in ultima
-                or "mesma unidade" in ultima
-                or "unidade consumidora" in ultima
-            )
-        ):
-            print("🏠 Respondendo mesma unidade/instalação")
-            await self.enviar_mensagem("Não")
-            return "OK"
-        
-        elif (
-            "é isso mesmo" in ultima
-            or "e isso mesmo" in ultima
-        ):
-            print("✅ Confirmando titular")
+        # CONFIRMAÇÃO (PRIORIDADE)
+        if "é isso mesmo" in ultima or "e isso mesmo" in ultima:
+            print("✅ Respondendo confirmação imediatamente")
             await self.enviar_mensagem("Sim")
             return "OK"
-
-        elif (
-            "ainda assim você precisa" in ultima
-            or "ainda assim voce precisa" in ultima
-            or "precisa de segunda via" in ultima
-        ):
-            print("📄 Confirmando segunda via")
-            await self.enviar_mensagem("Não")
-            return "OK"
-
-        # =====================================================
-        # 🔥 DADOS (PRIORIDADE MÁXIMA)
-        # =====================================================
-        elif (
-            "cpf" in ultima
-            or "cnpj" in ultima
-            or "digitar apenas os números" in ultima
-            or "digite apenas os números" in ultima
-            or "números do cpf" in ultima
-        ):
+        # CPF
+        if "cpf" in ultima or "cnpj" in ultima:
             print("📄 Enviando CPF")
             await self.enviar_mensagem(cpf)
             return "OK"
+
+        # INSTALAÇÃO
+        if (
+            "instalação" in ultima
+            or "instalacao" in ultima
+            or "unidade consumidora" in ultima
+        ):
+            print("🏠 Enviando instalação")
+            await self.enviar_mensagem(instalacao)
+            return "OK"
         
-        elif (
-            "digite para mim o número da unidade" in ultima
-            or "digite o número da unidade" in ultima
-            or "número da unidade consumidora" in ultima
-        ):
-            print("🏠 Enviando instalação")
-            await self.enviar_mensagem(instalacao)
-            return "OK"
+        if "titular da conta" in ultima:
+            print("👤 Detectou titular → aguardando confirmação")
+            return "AGUARDAR"
 
-        elif (
-            "digite a instalação" in ultima
-            or "informe a instalação" in ultima
-            or "número da instalação" in ultima
+        # TITULAR (CASO ESPECÍFICO)
+        if (
+            "titular" in ultima
+            and "cpf" not in ultima
+            and "cnpj" not in ultima
         ):
-            print("🏠 Enviando instalação")
-            await self.enviar_mensagem(instalacao)
-            return "OK"
-
-        # =====================================================
-        # 🔥 CONFIRMAÇÕES
-        # =====================================================
-        elif "titular" in ultima:
             print("👤 Confirmando titular")
             await self.enviar_mensagem("Sim")
             return "OK"
 
-        elif (
-            "está correto" in ultima
-            or "esta correto" in ultima
-            or "só pra confirmar" in ultima
-            or "so pra confirmar" in ultima
-            or "você quer a conta" in ultima
-            or "voce quer a conta" in ultima
-        ):
-            print("✅ Confirmando dados")
-            await self.enviar_mensagem("Sim")
+        # =========================
+        # 🔥 FLUXO CRÍTICO
+        # =========================
+
+        # SEM DÉBITO → CONFIRMAÇÃO FINAL
+        if "ainda assim" in ultima and "segunda via" in ultima:
+            print("📄 Sem débito → finalizando")
+            await self.enviar_mensagem("Não")
             return "OK"
 
-        # =====================================================
-        # 🔥 MENU
-        # =====================================================
-        elif (
-            ("como posso te ajudar" in ultima or "principais assuntos" in ultima)
-            and "deseja atendimento" not in ultima
-        ):
-            await self.enviar_mensagem("Segunda Via")
-            return "OK"
+        # =========================
+        # 🔥 ERROS / RECUPERAÇÃO
+        # =========================
 
-        elif (
-            "digite em poucas palavras" in ultima
-            and "deseja atendimento" not in ultima
-        ):
+        if "não entendi" in ultima or "nao entendi" in ultima:
+            print("🔄 Reset leve")
             await self.enviar_mensagem("2 via fatura")
             return "OK"
 
-        # =====================================================
-        # 🔥 ERROS
-        # =====================================================
-        elif "não foi possível" in ultima:
-            return "SEM_CONTA"
-        
-        elif "números" in ultima and "cpf" in ultima:
-            print("📄 Fallback CPF")
-            await self.enviar_mensagem(cpf)
-            return "OK"
-        
-        elif "não entendi" in ultima:
-            print("🔄 Reenviando CPF")
-            await self.enviar_mensagem(cpf)
+        if "não estou conseguindo te identificar" in ultima:
+            print("🔄 Reset por identificação")
+            await self.enviar_mensagem("Oi")
+            await asyncio.sleep(1)
+            await self.enviar_mensagem("2 via fatura")
             return "OK"
 
-        # =====================================================
-        return "IGNORAR"
+        # =========================
+        # 🔥 FINALIZAÇÃO
+        # =========================
+
+        if (
+            "te ajudo em algo mais" in ultima
+            or "algo mais" in ultima
+            or "quer tirar outra" in ultima
+        ):
+            print("🔚 Finalizando atendimento")
+            await self.enviar_mensagem("Não")
+            return "OK"
+
+        if "como você avalia" in ultima:
+            print("⭐ Avaliação")
+            await self.enviar_mensagem("10")
+            return "FINALIZADO"
+
+        if "foi um prazer conversar" in ultima:
+            print("♻️ Reiniciando fluxo")
+            await self.enviar_mensagem("Oi")
+            await asyncio.sleep(1)
+            await self.enviar_mensagem("2 via fatura")
+            return "OK"
+
+        # =========================
+        # 🔥 MENU (POR ÚLTIMO)
+        # =========================
+
+        if (
+            "como posso te ajudar" in ultima
+            or "digite em poucas palavras" in ultima
+        ):
+            print("📄 Enviando serviço")
+            await self.enviar_mensagem("2 via fatura")
+            return "OK"
+
+        # =========================
+        # 🔥 PDF
+        # =========================
+
+        if await self.tem_pdf():
+            print("📥 PDF detectado")
+            return "PDF"
+
+        # =========================
+        # 🔥 FALLBACK
+        # =========================
+
+        return "AGUARDAR"
     
     async def esperar_nova_resposta(self, timeout=15):
         mensagens = self.page.locator("div.message-in")
@@ -391,6 +309,7 @@ class WhatsAppClient:
 
     # =========================
     async def buscar_conta(self, cpf, instalacao):
+        self.ultima_msg_processada = None
         await self.abrir_conversa_cemig()
         await self.limpar_conversa()
 
@@ -425,7 +344,7 @@ class WhatsAppClient:
             if resultado == "FINALIZADO":
                 return {"tipo": "confirmacao"}
 
-            if resultado != "IGNORAR":
+            if resultado == "AGUARDAR":
                 await self.esperar_nova_resposta()
 
             # 🔥 verifica de novo após resposta
